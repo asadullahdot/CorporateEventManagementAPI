@@ -3,6 +3,8 @@
 Backend API for Acme Corp's internal event system: manage events and register employees.
 Built with FastAPI, SQLAlchemy 2.0 and PostgreSQL.
 
+**Demo video:** https://drive.google.com/file/d/1WnK0ZJTW5ELOeIUgFSbUgUKwLs8R6M08/view?usp=sharing
+
 ## Project structure
 
 | File | Responsibility |
