@@ -3,7 +3,7 @@
 import datetime as dt
 from typing import List
 
-from sqlalchemy import Date, DateTime, ForeignKey, Integer, String, Text, UniqueConstraint, func
+from sqlalchemy import Date, DateTime, ForeignKey, Index, Integer, String, Text, func
 from sqlalchemy.orm import Mapped, mapped_column, relationship
 
 from db import Base
@@ -22,7 +22,7 @@ class Event(Base):
     max_capacity: Mapped[int] = mapped_column(Integer, nullable=False)
 
     registrations: Mapped[List["Registration"]] = relationship(
-        back_populates="event", cascade="all, delete-orphan"
+        back_populates="event", cascade="all, delete-orphan", passive_deletes=True
     )
 
 
@@ -30,9 +30,6 @@ class Registration(Base):
     """An employee's registration for a single event."""
 
     __tablename__ = "registrations"
-    # Backstop for the duplicate rule (also checked in services.py).
-    __table_args__ = (UniqueConstraint("event_id", "attendee_email", name="uq_event_attendee"),)
-
     id: Mapped[int] = mapped_column(primary_key=True)
     event_id: Mapped[int] = mapped_column(
         ForeignKey("events.id", ondelete="CASCADE"), nullable=False, index=True
@@ -42,3 +39,12 @@ class Registration(Base):
     created_at: Mapped[dt.datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
 
     event: Mapped[Event] = relationship(back_populates="registrations")
+
+
+# Case-insensitive uniqueness: backstop for the duplicate rule (also checked in services.py).
+Index(
+    "uq_event_attendee_email_lower",
+    Registration.event_id,
+    func.lower(Registration.attendee_email),
+    unique=True,
+)

@@ -39,9 +39,16 @@ def list_events(db: Session) -> List[models.Event]:
     return list(db.scalars(select(models.Event).order_by(models.Event.date, models.Event.id)))
 
 
-def get_event(db: Session, event_id: int) -> models.Event:
-    """Return one event or raise ``NotFoundError``."""
-    event = db.get(models.Event, event_id)
+def get_event(db: Session, event_id: int, lock: bool = False) -> models.Event:
+    """Return one event or raise ``NotFoundError``.
+
+    With ``lock=True`` the row is locked (``SELECT ... FOR UPDATE``) until the
+    transaction ends, serialising capacity-sensitive operations on the event.
+    """
+    stmt = select(models.Event).where(models.Event.id == event_id)
+    if lock:
+        stmt = stmt.with_for_update()
+    event = db.scalar(stmt)
     if event is None:
         raise NotFoundError(f"Event with id {event_id} not found")
     return event
@@ -49,7 +56,7 @@ def get_event(db: Session, event_id: int) -> models.Event:
 
 def update_event(db: Session, event_id: int, data: schemas.EventUpdate) -> models.Event:
     """Replace an event's fields; raise ``NotFoundError`` if it does not exist."""
-    event = get_event(db, event_id)
+    event = get_event(db, event_id, lock=True)
     registered = _count_registrations(db, event_id)
     if data.max_capacity < registered:
         raise ConflictError(
@@ -83,7 +90,8 @@ def create_registration(
     db: Session, event_id: int, data: schemas.RegistrationCreate
 ) -> models.Registration:
     """Register an attendee, enforcing existence, duplicate and capacity rules."""
-    event = get_event(db, event_id)  # 404 if the event does not exist
+    # Lock the event row so concurrent registrations cannot overbook it.
+    event = get_event(db, event_id, lock=True)  # 404 if the event does not exist
 
     email = data.attendee_email.lower()
     duplicate = db.scalar(
@@ -104,9 +112,12 @@ def create_registration(
     db.add(registration)
     try:
         db.commit()
-    except IntegrityError:  # concurrent duplicate caught by the unique constraint
+    except IntegrityError:
         db.rollback()
-        raise ConflictError(f"{email} is already registered for this event")
+        # Event deleted meanwhile -> 404; otherwise the unique index caught a duplicate.
+        if db.get(models.Event, event_id) is None:
+            raise NotFoundError(f"Event with id {event_id} not found") from None
+        raise ConflictError(f"{email} is already registered for this event") from None
     db.refresh(registration)
     return registration
 

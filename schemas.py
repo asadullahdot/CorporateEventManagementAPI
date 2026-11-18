@@ -49,8 +49,8 @@ class EventUpdate(EventBase):
     model_config = EventCreate.model_config
 
 
-class EventResponse(EventBase):
-    """Event as returned by the API."""
+class EventResponse(BaseModel):
+    """Event as returned by the API (no input constraints, so legacy rows still serialise)."""
 
     model_config = ConfigDict(
         from_attributes=True,
@@ -67,6 +67,11 @@ class EventResponse(EventBase):
     )
 
     id: int
+    title: str
+    description: Optional[str] = None
+    date: dt.date
+    location: str
+    max_capacity: int
 
 
 class RegistrationCreate(BaseModel):
