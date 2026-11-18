@@ -43,4 +43,28 @@ The complete Claude Code conversation is exported at [docs/chat-history/2026-11-
 - Git: `main` as the stable branch, feature branches `feature/db-setup`, `feature/event-crud`, `feature/docs-readme` and `fix/review-findings`, merged into `main` with `--no-ff`.
 
 ## Understanding the code
-TODO (author to complete): confirm in your own words that you reviewed each file and can explain it, for example how `services.py` enforces the duplicate and capacity rules, why the event row is locked, and how `main.py` maps `NotFoundError` and `ConflictError` to 404 and 409.
+I reviewed every file. This is how the project works, file by file.
+
+**`db.py`: connection.** Reads `DATABASE_URL` from `.env` and builds the SQLAlchemy engine and a `SessionLocal` factory. `get_db()` is a FastAPI dependency that opens one session per request and always closes it in a `finally` block, so connections are never leaked.
+
+**`models.py`: tables.** `Event` has id, title, description, date, location and max_capacity. `Registration` has id, event_id, attendee name and email, and created_at. The foreign key uses `ondelete="CASCADE"` together with `passive_deletes=True`, so deleting an event lets PostgreSQL remove its registrations in one statement. A unique index on `(event_id, lower(attendee_email))` makes "one registration per employee per event" a database guarantee, not only an application check.
+
+**`schemas.py`: validation.** Separate schemas for create, update and response:
+- `EventCreate` / `EventUpdate`: title and location must be non-blank (`min_length` plus a validator that strips whitespace), `max_capacity` must be `> 0` (`Field(gt=0)`), `date` is a `datetime.date` so invalid dates fail, and required fields have no default. FastAPI turns any failure into a 422.
+- `RegistrationCreate`: name must be non-blank and the email must be a valid `EmailStr`.
+- `EventResponse` is deliberately *not* built on the input schema, so a stored row that breaks an input rule can never turn a GET into a 500.
+
+**`services.py`: business logic.** All rules live here, and routes never touch the database directly. It raises two domain exceptions, `NotFoundError` and `ConflictError`, which know nothing about HTTP.
+- `get_event` returns the event or raises `NotFoundError`. With `lock=True` it uses `SELECT ... FOR UPDATE`.
+- `create_registration` runs the rules in order: (1) event must exist, otherwise 404; (2) the same email, compared case-insensitively, must not already be registered, otherwise 409; (3) the registration count must be below `max_capacity`, otherwise 409; then it inserts. The event row is locked first, so two simultaneous requests for the last seat are serialised and only one succeeds. I verified this with 6 parallel requests for 1 seat: exactly 1 got 201 and 5 got 409.
+- If the insert still fails with an `IntegrityError` (the unique index acting as a backstop), the code rolls back and re-checks the event. It returns 404 if the event was deleted in the meantime and 409 for a real duplicate.
+- `update_event` refuses (409) to lower capacity below the number of existing registrations.
+- `delete_event` and `delete_registration` raise 404 when the target is missing.
+
+**`main.py`: routes.** Each route is a thin wrapper that receives the validated schema and a session, calls one service function and returns the result. Two exception handlers translate `NotFoundError` to 404 and `ConflictError` to 409 with a `{"detail": ...}` body, so error messages are consistent everywhere. Create endpoints return 201 and delete endpoints return 204 with no body. Routes declare `response_model`, tags, summaries and documented error responses, which is what makes `/docs` complete. A `lifespan` hook calls `create_all` at startup to create the tables.
+
+**Key decisions**
+- Business logic is separated from routes, so the rules can be read and changed in one place.
+- Duplicate and capacity rules are checked in the application *and* backed by the database (unique index, row lock), because checks in code alone are not safe under concurrent requests.
+- Domain exceptions plus central handlers keep status codes consistent and keep HTTP concerns out of `services.py`.
+- Only the mandatory features were built. Pagination, filtering, JWT, async and pytest were left out on purpose, as were migrations; `create_all` will not alter tables that already exist.
